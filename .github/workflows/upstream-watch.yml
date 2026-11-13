@@ -1,0 +1,42 @@
+name: Watch upstream
+
+# Weekly: if PyPI has a newer release of a pinned dependency (requirements.txt), open (or update) ONE issue listing them. Nothing is
+# changed automatically: Telethon speaks Telegram's protocol with full-account sessions, so a new release is code to read before it ships.
+on:
+  schedule:
+    - cron: '43 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  watch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Compare the pins with PyPI
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          : > body.md
+          n=0
+          while IFS='==' read -r name _ pin; do
+            [ -n "$pin" ] || continue
+            latest=$(curl -fsS "https://pypi.org/pypi/$name/json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["info"]["version"])')
+            echo "$name pin=$pin latest=$latest"
+            if [ "$pin" != "$latest" ]; then
+              n=$((n+1)); echo "- \`$name\`: pinned \`$pin\`, latest \`$latest\` (https://pypi.org/project/$name/$latest/)" >> body.md
+            fi
+          done < <(grep -E '^[A-Za-z0-9_.-]+==' requirements.txt)
+          [ "$n" -gt 0 ] || { echo "up to date"; exit 0; }
+          { echo "$n pinned dependency(ies) have a newer release on PyPI:"; echo; cat body.md; echo
+            echo "Read the changelog, change the pin in \`requirements.txt\`, push to \`main\` (CI rebuilds and runs the smoke test)."; } > issue.md
+          gh label create upstream --color 5319e7 --description "Upstream has a newer release" 2>/dev/null || true
+          existing=$(gh issue list --label upstream --state open --json number --jq '.[0].number // empty')
+          title="Pinned dependencies are behind PyPI ($n)"
+          if [ -n "$existing" ]; then gh issue edit "$existing" --title "$title" --body-file issue.md
+          else gh issue create --title "$title" --body-file issue.md --label upstream; fi
